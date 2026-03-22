@@ -6,19 +6,41 @@
 #include "Game.h"
 #include "../Logger/Logger.h"
 #include "../ECS/ECS.h"
+
 #include "../Components/TransformComponent.h"
 #include "../Components/RigidBodyComponent.h"
 #include "../Components/AnimationComponent.h"
 #include "../Components/SpriteComponent.h"
+#include "../Components/BoxColliderComponent.h"
+#include "../Components/KeyboardControlledComponent.h"
+#include "../Components/CameraFollowComponent.h"
+#include "../Components/HealthComponent.h"
+#include "../Components/ProjectileEmitterComponent.h"
+#include "../Components/ProjectileComponent.h"
+
 #include "../Systems/MovementSystem.h"
 #include "../Systems/RenderSystem.h"
 #include "../Systems/AnimationSystem.h"
+#include "../Systems/CollisionSystem.h"
+#include "../Systems/RenderColliderSystem.h"
+#include "../Systems/DamageSystem.h"
+#include "../Systems/KeyboardControlSystem.h"
+#include "../Systems/CameraMovementSystem.h"
+#include "../Systems/ProjectileEmitSystem.h"
+#include "../Systems/ProjectileLifecycleSystem.h"
+
+int Game::windowWidth;
+int Game::windowHeight;
+int Game::mapWidth;
+int Game::mapHeight;
 
 
 Game::Game() {
     isRunning = false;
+    isDebug = false;
     registry = std::make_unique<Registry>();
     assetStore = std::make_unique<AssetStore>();
+    eventBus = std::make_unique<EventBus>();
     Logger::Log("Game constructor called!");
 }
 
@@ -55,6 +77,12 @@ void Game::Initialize() {
         return;
     }
     SDL_SetWindowFullscreen(window, SDL_WINDOW_FULLSCREEN);
+    
+    // 使用整个屏幕区域
+    camera.x = 0;
+    camera.y = 0;
+    camera.w = windowWidth;
+    camera.h = windowHeight;
     isRunning = true;
 }
 
@@ -78,6 +106,10 @@ void Game::ProcessInput() {
                 if (sdlEvent.key.keysym.sym == SDLK_ESCAPE) {
                     isRunning = false;
                 }
+                if (sdlEvent.key.keysym.sym == SDLK_d) {
+                    isDebug = !isDebug;
+                }
+                eventBus->EmitEvent<KeyPressedEvent>(sdlEvent.key.keysym.sym);
                 break;
         }
     }
@@ -88,13 +120,25 @@ void Game::LoadLevel(int level) {
     registry->AddSystem<MovementSystem>();
     registry->AddSystem<RenderSystem>();
     registry->AddSystem<AnimationSystem>();
-
+    registry->AddSystem<CollisionSystem>();
+    registry->AddSystem<RenderColliderSystem>();
+    registry->AddSystem<DamageSystem>();
+    registry->AddSystem<KeyboardControlSystem>();
+    registry->AddSystem<CameraMovementSystem>();
+    registry->AddSystem<ProjectileEmitSystem>();
+    registry->AddSystem<ProjectileLifecycleSystem>();
+    
+    
     // 增加资产到资产库
     assetStore->AddTexture(renderer, "tank-image", "./assets/images/tank-panther-right.png");
     assetStore->AddTexture(renderer, "truck-image", "./assets/images/truck-ford-right.png");
-    assetStore->AddTexture(renderer, "chopper-image", "./assets/images/chopper.png");
+    assetStore->AddTexture(renderer, "chopper-image", "./assets/images/chopper-spritesheet.png");
     assetStore->AddTexture(renderer, "radar-image", "./assets/images/radar.png");
     assetStore->AddTexture(renderer, "tilemap-image", "./assets/tilemaps/jungle.png");
+    assetStore->AddTexture(renderer, "bullet-image", "./assets/images/bullet.png");
+    // assetStore->AddFont("charriot-font-20", "./assets/fonts/charriot.ttf", 20);
+    // assetStore->AddFont("pico8-font-5", "./assets/fonts/pico8.ttf", 5);
+    // assetStore->AddFont("pico8-font-10", "./assets/fonts/pico8.ttf", 10);
 
     // 加载瓦片地图
     // ./assets/tilemaps/jungle.png 从资源中加载TileMap纹理
@@ -102,12 +146,14 @@ void Game::LoadLevel(int level) {
     // Tip: 你可以使用源矩形这个概念
     // Tip: 考虑为每个瓦片简历一个单独的实体
     int tileSize = 32;
-    double tileScale = 4.0;
+    double tileScale = 5.0;
     int mapNumCols = 25;
     int mapNumRows = 20;
 
     std::fstream mapFile;
     mapFile.open("./assets/tilemaps/jungle.map");
+    mapWidth = mapNumCols * tileSize * tileScale;
+    mapHeight = mapNumRows * tileSize * tileScale;
 
     for (int y = 0; y < mapNumRows; y++) {
         for (int x = 0; x < mapNumCols; x++) {
@@ -119,8 +165,9 @@ void Game::LoadLevel(int level) {
             mapFile.ignore(); // 跳过逗号
 
             Entity tile = registry->CreateEntity();
+            tile.Group("tiles");
             tile.AddComponent<TransformComponent>(glm::vec2(x * (tileScale * tileSize), y * (tileScale * tileSize)),  glm::vec2(tileScale, tileScale), 0.0);
-            tile.AddComponent<SpriteComponent>("tilemap-image", tileSize, tileSize, 0, srcRectX, srcRectY);
+            tile.AddComponent<SpriteComponent>("tilemap-image", tileSize, tileSize, 0, false, srcRectX, srcRectY);
 
         }
     }
@@ -128,31 +175,43 @@ void Game::LoadLevel(int level) {
     mapFile.close();
 
     // 创建一个实体
-    Entity chopper = registry->CreateEntity();    
+    Entity chopper = registry->CreateEntity();
+    chopper.Tag("player");    
     // 增加一些组件到实体
-    chopper.AddComponent<TransformComponent>(glm::vec2(10.0, 10.0), glm::vec2(4.0, 4.0), 0.0);
+    chopper.AddComponent<TransformComponent>(glm::vec2(10.0, 100.0), glm::vec2(1.0, 1.0), 0.0);
     chopper.AddComponent<RigidBodyComponent>(glm::vec2(0.0, 0.0));
     chopper.AddComponent<SpriteComponent>("chopper-image", 32, 32, 1);
     chopper.AddComponent<AnimationComponent>(2, 15, true);
+    chopper.AddComponent<BoxColliderComponent>(32, 32);
+    chopper.AddComponent<KeyboardControlledComponent>(glm::vec2(0,-200), glm::vec2(200, 0), glm::vec2(0, 200), glm::vec2(-200, 0));
+    chopper.AddComponent<CameraFollowComponent>();
+    chopper.AddComponent<ProjectileEmitterComponent>(glm::vec2(400.0, 400.0), 0, 10000, 10, true);
+    chopper.AddComponent<HealthComponent>(100);
 
     Entity radder = registry->CreateEntity();    
     radder.AddComponent<TransformComponent>(glm::vec2(windowWidth-74, 10.0), glm::vec2(1.0, 1.0), 0.0);
     radder.AddComponent<RigidBodyComponent>(glm::vec2(0.0, 0.0));
-    radder.AddComponent<SpriteComponent>("radar-image", 64, 64, 2);
+    radder.AddComponent<SpriteComponent>("radar-image", 64, 64, 2, true);
     radder.AddComponent<AnimationComponent>(8, 5, true);
 
-    // // 创建一个实体
-    // Entity tank = registry->CreateEntity();    
-    // // 增加一些组件到实体
-    // tank.AddComponent<TransformComponent>(glm::vec2(10.0, 30.0), glm::vec2(4.0, 4.0), 0.0);
-    // tank.AddComponent<RigidBodyComponent>(glm::vec2(40.0, 0.0));
-    // tank.AddComponent<SpriteComponent>("tank-image", 32, 32, 2);
+    Entity tank = registry->CreateEntity();    
+    tank.Group("enemies");
+    tank.AddComponent<TransformComponent>(glm::vec2(100.0, 10.0), glm::vec2(1.0, 1.0), 0.0);
+    tank.AddComponent<RigidBodyComponent>(glm::vec2(0.0, 0.0));
+    tank.AddComponent<SpriteComponent>("tank-image", 32, 32, 2);
+    tank.AddComponent<BoxColliderComponent>(32, 32);
+    tank.AddComponent<HealthComponent>(100);
+    tank.AddComponent<ProjectileEmitterComponent>(glm::vec2(100.0, 0.0), 2000, 5000, 10, false);
 
-    // Entity truck = registry->CreateEntity();
-    // truck.AddComponent<TransformComponent>(glm::vec2(50.0, 100.0), glm::vec2(1.0, 1.0), 0.0);
-    // truck.AddComponent<RigidBodyComponent>(glm::vec2(0.0, 50.0));
-    // truck.AddComponent<SpriteComponent>("truck-image", 32, 32, 1);
-
+    Entity truck = registry->CreateEntity();
+    truck.Group("enemies");
+    truck.AddComponent<TransformComponent>(glm::vec2(10.0, 10.0), glm::vec2(1.0, 1.0), 0.0);
+    truck.AddComponent<RigidBodyComponent>(glm::vec2(0.0, 0.0));
+    truck.AddComponent<SpriteComponent>("truck-image", 32, 32, 1);
+    truck.AddComponent<BoxColliderComponent>(32, 32);
+    truck.AddComponent<HealthComponent>(100);
+    truck.AddComponent<HealthComponent>(100);
+    truck.AddComponent<ProjectileEmitterComponent>(glm::vec2(0.0, 100.0), 2000, 5000, 10, false);
 }
 
 void Game::Setup() {
@@ -173,9 +232,21 @@ void Game::Update() {
     // 记录这一帧的开始时间 
     millsecsPreviousFrame = SDL_GetTicks();
 
+    // 在进行任何操作前 需要基本充值当前帧的所有时间处理程序
+    eventBus->Reset();
+
+    // 为所有系统进行事件订阅
+    registry->GetSystem<DamageSystem>().SubscribeToEvents(eventBus);
+    registry->GetSystem<KeyboardControlSystem>().SubscribeToEvents(eventBus);
+    registry->GetSystem<ProjectileEmitSystem>().SubscribeToEvents(eventBus);
+
     // 让所有系统更新
     registry->GetSystem<MovementSystem>().Update(deltaTime);
     registry->GetSystem<AnimationSystem>().Update();
+    registry->GetSystem<CollisionSystem>().Update(eventBus);
+    registry->GetSystem<CameraMovementSystem>().Update(camera);
+    registry->GetSystem<ProjectileEmitSystem>().Update(registry);
+    registry->GetSystem<ProjectileLifecycleSystem>().Update();
 
     // 更新注册表 以 创建或销毁等待的实体
     registry->Update();
@@ -187,8 +258,10 @@ void Game::Render() {
     SDL_RenderClear(renderer);
 
     // 调用所有需要渲染的系统
-    registry->GetSystem<RenderSystem>().Update(renderer, assetStore);
-    
+    registry->GetSystem<RenderSystem>().Update(renderer, assetStore, camera);
+    if (isDebug) {
+        registry->GetSystem<RenderColliderSystem>().Update(renderer, camera);
+    }
 
     SDL_RenderPresent(renderer);
 }

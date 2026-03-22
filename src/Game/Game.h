@@ -2,6 +2,7 @@
 #define GAME_H
 
 #include "../ECS/ECS.h"
+#include "../EventBus/EventBus.h"
 #include "../AssetStore/AssetStore.h"
 #include <SDL2/SDL.h>
 
@@ -11,12 +12,15 @@ const int MILLISECS_PER_FRAME = 1000 / FPS;
 class Game {
     private:
         bool isRunning;
+        bool isDebug;
         int millsecsPreviousFrame = 0;
         SDL_Window* window;
         SDL_Renderer* renderer;
+        SDL_Rect camera;
 
         std::unique_ptr<Registry> registry;
         std::unique_ptr<AssetStore> assetStore;
+        std::unique_ptr<EventBus> eventBus;
         
     public:
         Game();
@@ -30,8 +34,11 @@ class Game {
         void Render();
         void Destroy();
 
-        int windowWidth;
-        int windowHeight;
+        // static 从任何地方获取这些值
+        static int windowWidth;
+        static int windowHeight;
+        static int mapWidth;
+        static int mapHeight;
 
 };
 

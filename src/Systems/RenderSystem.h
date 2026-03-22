@@ -14,7 +14,7 @@ class RenderSystem : public System {
             RequireComponent<SpriteComponent>();
         }
 
-        void Update(SDL_Renderer* renderer, std::unique_ptr<AssetStore>& assetStore) {
+        void Update(SDL_Renderer* renderer, std::unique_ptr<AssetStore>& assetStore, SDL_Rect camera) {
             // 创建一个包含所有需要渲染的实体 以及其精灵组件和变换组件的向量
             struct RenderableEntity {
                 TransformComponent transformComponent;
@@ -51,8 +51,8 @@ class RenderSystem : public System {
 
                 // 目标矩形 包含渲染的xy位置
                 SDL_Rect dstRect = {
-                    static_cast<int>(transform.position.x),
-                    static_cast<int>(transform.position.y),
+                    static_cast<int>(transform.position.x - (sprite.isFixed ? 0 : camera.x)),
+                    static_cast<int>(transform.position.y - (sprite.isFixed ? 0 : camera.y)),
                     static_cast<int>(sprite.width * transform.scale.x),
                     static_cast<int>(sprite.height * transform.scale.y)
                 };

@@ -23,14 +23,14 @@ class MovementSystem: public System {
                 transform.position.x += rigidbody.velocity.x * deltaTime;
                 transform.position.y += rigidbody.velocity.y * deltaTime;
 
-                Logger::Log(
-                    "实体 id = " + 
-                    std::to_string(entity.GetId()) + 
-                    " 位置现在位于 (" + 
-                    std::to_string(transform.position.x) + 
-                    ", " + 
-                    std::to_string(transform.position.y) + ")"
-                );
+                // Logger::Log(
+                //     "实体 id = " + 
+                //     std::to_string(entity.GetId()) + 
+                //     " 位置现在位于 (" + 
+                //     std::to_string(transform.position.x) + 
+                //     ", " + 
+                //     std::to_string(transform.position.y) + ")"
+                // );
             }
                 
         }   

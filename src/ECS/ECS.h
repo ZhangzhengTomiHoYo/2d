@@ -8,6 +8,7 @@
 #include <typeindex>
 #include <set>
 #include <memory>
+#include <deque>
 
 const unsigned int MAX_ENTITIES = 32;
 
@@ -41,6 +42,7 @@ class Entity {
     public:
         Entity(int id): id(id) {};
         Entity(const Entity& entity) = default;
+        void Kill();
         int GetId() const;
 
         Entity& operator =(const Entity& other) = default;
@@ -56,6 +58,12 @@ class Entity {
 
         // 持有一个 注册表 指针
         class Registry* registry;
+
+        // 管理实体 tags 和 groups
+        void Tag(const std::string& tag);
+        bool HasTag(const std::string& tag) const;
+        void Group(const std::string& group);
+        bool BelongsToGroup(const std::string& group) const;
 };
 
 //////////////////////////////////////////////////
@@ -85,7 +93,8 @@ class System {
 
 class IPool {
     public:
-        virtual ~IPool() {}
+        virtual ~IPool() = default;
+        virtual void RemoveEntityFromPool(int entityId) = 0; // 关键
 };
 
 //////////////////////////////////////////////////
@@ -96,21 +105,31 @@ class IPool {
 template <typename T>
 class Pool : public IPool{
     private:
+        // 实际内容与实际大小
         std::vector<T> data;
+        int size;
+
+        // 两个辅助map跟踪每个索引的EntityIds
+        //
+        // 实体ID 与 数组索引的对应关系
+        std::unordered_map<int,int> entityIdToIndex;
+        // 数组索引 和 实体ID 的对应关系
+        std::unordered_map<int,int> indexToEntityId;
 
     public:
-        Pool(int size = 100) {
-            data.resize(size);
+        Pool(int capacity = 100) {
+            size = 0;
+            data.resize(capacity);
         }
 
         virtual ~Pool() = default;
 
-        bool isEmpty() const {
-            return data.empty();
+        bool IsEmpty() const {
+            return size == 0;
         }
 
         int GetSize() const {
-            return data.size();
+            return size;
         }
 
         void Resize(int n) {
@@ -119,17 +138,57 @@ class Pool : public IPool{
 
         void Clear() {
             data.clear();
+            size = 0;
         }
 
         void Add(T object) {
             data.push_back(object);
         }
 
-        void Set(int index, T object) {
-            data[index] = object;
+        void Set(int entityId, T object) {
+            if (entityIdToIndex.find(entityId) != entityIdToIndex.end()) {
+                // 如果 实体ID 存在 只需要简单的替换组件对象
+                int index = entityIdToIndex[entityId];
+                data[index] = object;
+            } else {
+                // 在添加新对象的过程中
+                // 我需要记录实体ID及其向量索引
+                int index = size;
+                entityIdToIndex.emplace(entityId, index);
+                indexToEntityId.emplace(index, entityId);
+                if (index >= data.capacity()) {
+                    data.resize(size * 2);
+                }
+                data[index] = object;
+                size++;
+            }
         }
 
-        T& Get(int index) {
+        void Remove(int entityId) {
+            // 最后一个元素 放到 删除的位置上 以保持数组紧凑
+            int indexOfRemoved = entityIdToIndex[entityId];
+            int indexOfLast = size - 1;
+            data[indexOfRemoved] = data[indexOfLast];
+
+            // 索引是Pool的
+            int entityIdOfLastElement = indexToEntityId[indexOfLast];
+            entityIdToIndex[entityIdOfLastElement] = indexOfRemoved;
+            indexToEntityId[indexOfRemoved] = entityIdOfLastElement;
+
+            entityIdToIndex.erase(entityId);
+            indexToEntityId.erase(indexOfLast);
+
+            size--;
+        }
+
+        void RemoveEntityFromPool(int entityId) override {
+            if (entityIdToIndex.find(entityId) != entityIdToIndex.end()) {
+                Remove(entityId);
+            }
+        }
+
+        T& Get(int entityId) {
+            int index = entityIdToIndex[entityId];
             return static_cast<T&>(data[index]);
         }
 
@@ -166,6 +225,21 @@ class Registry {
         std::set<Entity> entitiesToBeAdded;
         std::set<Entity> entitiesToBeKilled;
 
+        // 包含了之前移除的可用实体ID
+        std::deque<int> freeIds;
+
+        // 增加或移除 实体 从他们所在的系统中
+        void AddEntityToSystems(Entity entity); // 检查这个实体的组件签名，并将其添加到感兴趣的系统中
+        void RemoveEntityFromSystems(Entity entity);
+        
+        // Entity tags 每一个实体一个tag
+        std::unordered_map<std::string, Entity> entityPerTag;
+        std::unordered_map<int, std::string> tagPerEntity;
+
+        // Entity groups 每一个组有多个实体
+        std::unordered_map<std::string, std::set<Entity>> entitiesPerGroup;
+        std::unordered_map<int, std::string> groupPerEntity;
+
     public:
         Registry() {
             Logger::Log("Registry constructor called!");
@@ -179,6 +253,7 @@ class Registry {
 
         // 实体管理
         Entity CreateEntity();
+        void KillEntity(Entity entity);
 
         // 组件管理
         template <typename TComponent, typename ...TArgs> void AddComponent(Entity entity, TArgs&& ...args);
@@ -192,23 +267,17 @@ class Registry {
         template <typename TSystem> bool HasSystem() const;
         template <typename TSystem> TSystem& GetSystem() const;
 
-        // 检查这个实体的组件签名，并将其添加到感兴趣的系统中
-        void AddEntityToSystems(Entity entity);
-        
-        // TODO:
-        //
-        // 创建实体
-        // 销毁实体
-        //
-        // 给实体添加组件
-        // 从实体移除组件
-        // 实体是否包含某个组件
-        // 从实体获取一个组件
-        //
-        // 添加系统
-        // 移除系统
-        // 是否存在某个系统
-        // 获取系统
+        // Tag 管理
+        void TagEntity(Entity entity, const std::string& tag);
+        bool EntityHasTag(Entity entity, const std::string& tag) const;
+        Entity GetEntityByTag(const std::string& tag) const;
+        void RemoveEntityTag(Entity entity);
+
+        // Group 管理
+        void GroupEntity(Entity entity, const std::string& group);
+        bool EntityBelongsToGroup(Entity entity, const std::string& group) const;
+        std::vector<Entity> GetEntitiesByGroup(const std::string& group) const;
+        void RemoveEntityGroup(Entity entity);
 };
 
 template <typename TComponent> 
@@ -254,38 +323,37 @@ void Registry::AddComponent(Entity entity, TArgs&& ...args) {
     }
 
     if (!componentPools[componentId]) {
-    // 1. 创建具体组件池的智能指针
-    std::shared_ptr<Pool<TComponent>> newComponentPool = std::make_shared<Pool<TComponent>>();
-    
-    // 注意！！！核心知识点：
-    // componentPools 里面存的是 vector<shared_ptr<IPool>>，而 newComponentPool 是 shared_ptr<Pool<TComponent>>
-    // 这样赋值会发生：向上转型（Upcasting） + 类型擦除（Type Erasure）
-    // 结果：变成了一个【基类智能指针】指向了【派生类对象】
-    
-    // -> 为什么这里安全？
-    // 因为使用了 shared_ptr，其底层的【控制块（Control Block）】在 make_shared 时就已经记录了针对 Pool<TComponent> 的专属删除器。
-    // 即便表面类型变成了 IPool，最后引用计数归零时，依然会调用派生类的析构函数。
-    
-    // -> 如果换成 unique_ptr 会怎样？
-    // unique_ptr 是零开销的，没有控制块来记录专属删除器。
-    // 如果基类 IPool 没有写 virtual 析构函数，使用 unique_ptr 就会导致未定义行为（通常是派生类资源泄漏）。
-    // （这就是为什么作为多态基类的 IPool，一定要老老实实写上 virtual ~IPool() = default; 的原因）
-    
-    componentPools[componentId] = newComponentPool;
-}
-
-    std::shared_ptr<Pool<TComponent>> componentPool = std::static_pointer_cast<Pool<TComponent>>(componentPools[componentId]);
-
-    if (entityId >= componentPools.size()) {
-        componentPool->Resize(numEntities);
+        // 1. 创建具体组件池的智能指针
+        std::shared_ptr<Pool<TComponent>> newComponentPool = std::make_shared<Pool<TComponent>>();
+        
+        // 注意！！！核心知识点：
+        // componentPools 里面存的是 vector<shared_ptr<IPool>>，而 newComponentPool 是 shared_ptr<Pool<TComponent>>
+        // 这样赋值会发生：向上转型（Upcasting） + 类型擦除（Type Erasure）
+        // 结果：变成了一个【基类智能指针】指向了【派生类对象】
+        
+        // -> 为什么这里安全？
+        // 因为使用了 shared_ptr，其底层的【控制块（Control Block）】在 make_shared 时就已经记录了针对 Pool<TComponent> 的专属删除器。
+        // 即便表面类型变成了 IPool，最后引用计数归零时，依然会调用派生类的析构函数。
+        
+        // -> 如果换成 unique_ptr 会怎样？
+        // unique_ptr 是零开销的，没有控制块来记录专属删除器。
+        // 如果基类 IPool 没有写 virtual 析构函数，使用 unique_ptr 就会导致未定义行为（通常是派生类资源泄漏）。
+        // （这就是为什么作为多态基类的 IPool，一定要老老实实写上 virtual ~IPool() = default; 的原因）
+        
+        componentPools[componentId] = newComponentPool;
     }
+
+    // 找到组件池
+    std::shared_ptr<Pool<TComponent>> componentPool = std::static_pointer_cast<Pool<TComponent>>(componentPools[componentId]);
 
     TComponent newComponent(std::forward<TArgs>(args)...);
 
     componentPool->Set(entityId, newComponent);
+
     entityComponentSignatures[entityId].set(componentId);
 
     Logger::Log("实体 id = " + std::to_string(entityId) + " 添加组件 id = " + std::to_string(componentId));
+    Logger::Log("组件 id = " + std::to_string(componentId) + " --> 对应组件池向量 Size: " + std::to_string(componentPool->GetSize()));
 }
 
 template<typename TComponent>
@@ -293,6 +361,12 @@ void Registry::RemoveComponent(Entity entitiy) {
     const auto componentId = Component<TComponent>::GetId();
     const auto entityId = entitiy.GetId();
     
+    // 找到组件池
+    // 从组件池向量中移除该实体对应的组件
+    std::shared_ptr<Pool<TComponent>> componentPool = std::static_pointer_cast<Pool<TComponent>>(componentPools[componentId]);
+    componentPool->Remove(entityId);
+
+    // 将该实体的组件签名设置为不活动状态
     entityComponentSignatures[entityId].set(componentId, false);
 
     Logger::Log("实体 id = " + std::to_string(entityId) + " 移除组件 id = " + std::to_string(componentId));
